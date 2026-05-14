@@ -5,6 +5,7 @@ import AppShell from '@/components/AppShell'
 import ExampleCard from '@/components/ExampleCard'
 import OptionButton from '@/components/OptionButton'
 import FeedbackPanel from '@/components/FeedbackPanel'
+import SpeakerButton from '@/components/SpeakerButton'
 import { initUserSenseStates, recordAttempt } from '@/lib/state'
 import { loadAttemptLogs } from '@/lib/storage'
 import { buildDailyPlan } from '@/lib/planner'
@@ -16,6 +17,7 @@ import {
   highlightTargetWord,
 } from '@/lib/quiz'
 import { speakSentence, cancelSpeech } from '@/lib/speech'
+import { useAudioLifecycle } from '@/lib/useAudioLifecycle'
 import type { Sense, ExampleSentence, Lemma, AttemptLog } from '@/types/vocab'
 
 type Question = {
@@ -39,14 +41,13 @@ export default function SentencePage() {
   const [done, setDone] = useState(false)
   const startTimeRef = useRef<number>(Date.now())
 
+  useAudioLifecycle()
+
   useEffect(() => {
     const states = initUserSenseStates()
     const logs = loadAttemptLogs()
     const plan = buildDailyPlan(states, logs)
-    // Filter to only senses that have examples
-    const validIds = plan.sentenceSenseIds.filter(
-      (id) => getExampleForSense(id) !== undefined
-    )
+    const validIds = plan.sentenceSenseIds.filter((id) => getExampleForSense(id) !== undefined)
     setQueue(validIds)
   }, [])
 
@@ -61,16 +62,14 @@ export default function SentencePage() {
   }, [queue, currentIdx])
 
   function loadQuestion(senseId: string) {
+    cancelSpeech()
     const sense = getSenseById(senseId)
     if (!sense) return
     const example = getExampleForSense(senseId)
     if (!example) return
     const lemma = getLemmaForSense(senseId)
     const options = getOptionsForSense(senseId)
-    const highlightedHtml = lemma
-      ? highlightTargetWord(example.textEn, lemma.text)
-      : example.textEn
-
+    const highlightedHtml = lemma ? highlightTargetWord(example.textEn, lemma.text) : example.textEn
     setQuestion({ sense, example, lemma, options, highlightedHtml })
     setAnswer(null)
     startTimeRef.current = Date.now()
@@ -81,13 +80,9 @@ export default function SentencePage() {
     if (answer || !question) return
     const latencyMs = Date.now() - startTimeRef.current
     setAnswer({ selectedId: selectedSense.id, correct: isCorrect })
-
     const errorType: AttemptLog['errorType'] = !isCorrect
-      ? question.sense.isFamiliarNewMeaning
-        ? 'familiar_new_meaning'
-        : 'sentence_not_understood'
+      ? question.sense.isFamiliarNewMeaning ? 'familiar_new_meaning' : 'sentence_not_understood'
       : 'none'
-
     recordAttempt({
       senseId: question.sense.id,
       mode: 'sentence_sense',
@@ -106,7 +101,11 @@ export default function SentencePage() {
   if (queue.length === 0 && !done) {
     return (
       <AppShell title="句中识义" backHref="/">
-        <p className="text-center text-gray-400 mt-20">暂无句中识义练习，先完成新词学习吧。</p>
+        <div className="flex flex-col items-center justify-center h-60 text-center gap-3">
+          <span className="text-3xl">📝</span>
+          <p className="text-sm text-gray-500">暂无句中识义练习</p>
+          <p className="text-xs text-gray-400">先完成新词学习，之后会出现</p>
+        </div>
       </AppShell>
     )
   }
@@ -114,12 +113,10 @@ export default function SentencePage() {
   if (done) {
     return (
       <AppShell title="句中识义" backHref="/">
-        <div className="text-center mt-20 space-y-4">
-          <div className="text-4xl">✅</div>
-          <p className="text-gray-700 font-semibold">句中识义练习完成</p>
-          <a href="/" className="inline-block mt-4 text-indigo-600 text-sm hover:underline">
-            返回首页
-          </a>
+        <div className="flex flex-col items-center justify-center h-60 text-center gap-3">
+          <span className="text-3xl">✓</span>
+          <p className="text-sm font-semibold text-gray-700">句中识义完成</p>
+          <a href="/" className="mt-2 text-sm text-indigo-600 hover:underline">返回首页</a>
         </div>
       </AppShell>
     )
@@ -128,23 +125,39 @@ export default function SentencePage() {
   return (
     <AppShell title="句中识义" backHref="/">
       {question && (
-        <div className="space-y-5">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-gray-500">
-              划线词在句中是什么义项？
-            </p>
-            <span className="text-xs text-gray-400">
+        <div className="space-y-4">
+          {/* Progress */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-violet-500 rounded-full transition-all"
+                style={{ width: `${(currentIdx / queue.length) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs text-gray-400 flex-shrink-0 tabular-nums">
               {currentIdx + 1} / {queue.length}
             </span>
           </div>
 
+          {/* Instruction + speaker */}
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-gray-500">
+              <span className="font-medium text-gray-700">高亮词</span>在这句话里是哪个义项？
+            </p>
+            {question.example && (
+              <SpeakerButton text={question.example.textEn} />
+            )}
+          </div>
+
+          {/* Sentence */}
           <ExampleCard
             textEn={question.example.textEn}
             highlightedHtml={question.highlightedHtml}
           />
 
+          {/* Options */}
           <div className="space-y-2">
-            {question.options.map(({ sense, isCorrect }) => {
+            {question.options.map(({ sense, isCorrect }, i) => {
               let state: 'idle' | 'correct' | 'wrong' | 'disabled' = 'idle'
               if (answer) {
                 if (sense.id === answer.selectedId) {
@@ -158,7 +171,8 @@ export default function SentencePage() {
               return (
                 <OptionButton
                   key={sense.id}
-                  label={`${sense.pos} ${sense.glossZh}`}
+                  index={i}
+                  label={`${sense.pos}  ${sense.glossZh}`}
                   state={state}
                   onClick={() => handleSelect(sense, isCorrect)}
                 />
@@ -166,20 +180,21 @@ export default function SentencePage() {
             })}
           </div>
 
+          {/* Feedback */}
           {answer && question && (
             <>
               <FeedbackPanel
                 correct={answer.correct}
-                correctGloss={`${question.sense.pos} ${question.sense.glossZh}`}
+                correctGloss={`${question.sense.pos}  ${question.sense.glossZh}`}
                 textZh={question.example.textZh}
                 clueText={question.example.clueText}
               />
               <button
                 type="button"
                 onClick={handleNext}
-                className="w-full bg-indigo-600 text-white rounded-xl py-3 font-semibold text-sm hover:bg-indigo-700 transition-colors"
+                className="w-full bg-indigo-600 text-white rounded-2xl py-3.5 font-semibold text-sm hover:bg-indigo-700 active:scale-[0.98] transition-all"
               >
-                下一题 →
+                {currentIdx + 1 < queue.length ? '下一题' : '完成'}
               </button>
             </>
           )}
